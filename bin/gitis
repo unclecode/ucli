@@ -8,6 +8,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from colorama import init, Fore, Style
 init()  # Initialize colorama
+GITBOSS_DIR = ".ucli"
+GITBOSS_DIR = os.path.join(os.getcwd(), GITBOSS_DIR)
+
+
+def ensure_gitboss_directory():
+    """Ensure .ucli directory exists and has proper structure, if not generate it"""
+    if not os.path.exists(GITBOSS_DIR):
+        os.makedirs(GITBOSS_DIR)
+        log_info(f"Created {GITBOSS_DIR} directory")
+    else:
+        log_info(f"Found {GITBOSS_DIR} directory")
+    
+ensure_gitboss_directory()
 
 def log_info(message):
     print(f"{Fore.BLUE}[INFO]{Style.RESET_ALL} {message}", file=sys.stderr)
@@ -106,7 +119,7 @@ def process_issue(issue, owner_last_comment, keywords):
 
 def save_to_markdown(issues, filename="git_issues.md", owner_last_comment=False):
     log_info(f"Saving {len(issues)} issues to {filename}")
-    _path = os.getcwd() + "/" + filename
+    _path = GITBOSS_DIR + "/" + filename
     with open(_path, "w", encoding="utf-8") as f:
         f.write("# GitHub Issues Analysis\n\n")
         condition = "are" if owner_last_comment else "are not"

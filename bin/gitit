@@ -17,7 +17,7 @@ init()  # Initialize colorama
 #
 
 # Constants
-GITBOSS_DIR = ".gitboss"
+GITBOSS_DIR = ".ucli"
 CURRENT_CHANGES_FILE = "current_changes.md"
 
 # Pydantic models for structured output
@@ -67,13 +67,13 @@ def log_error(message):
 class GitBossManager:
     def __init__(self, repo_path='.'):
         self.repo_path = os.getcwd()
-        self.gitboss_path = os.path.join(repo_path, GITBOSS_DIR)
+        self.ucli_path = os.path.join(repo_path, GITBOSS_DIR)
         self.ensure_gitboss_directory()
         
     def ensure_gitboss_directory(self):
-        """Ensure .gitboss directory exists and has proper structure"""
-        if not os.path.exists(self.gitboss_path):
-            os.makedirs(self.gitboss_path)
+        """Ensure .ucli directory exists and has proper structure"""
+        if not os.path.exists(self.ucli_path):
+            os.makedirs(self.ucli_path)
             log_info(f"Created {GITBOSS_DIR} directory")
             
             # Create .gitignore if it doesn't exist
@@ -89,7 +89,7 @@ class GitBossManager:
 
     def save_current_changes(self, content: str):
         """Save current changes to current_changes.md"""
-        filepath = os.path.join(self.gitboss_path, CURRENT_CHANGES_FILE)
+        filepath = os.path.join(self.ucli_path, CURRENT_CHANGES_FILE)
         with open(filepath, 'w') as f:
             f.write(content)
         return filepath
@@ -98,7 +98,7 @@ class GitBossManager:
         """Save committed changes with timestamp"""
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         filename = f"changes_{timestamp}.md"
-        filepath = os.path.join(self.gitboss_path, filename)
+        filepath = os.path.join(self.ucli_path, filename)
         with open(filepath, 'w') as f:
             f.write(content)
         return filepath
@@ -288,7 +288,7 @@ The changelog entry should focus on user-facing changes and development impact. 
     result = CommitDetails(**json.loads(result))
     
     # Save the generated changelog with timestamp
-    changelog_file = os.path.join(gitboss.gitboss_path, f"changelog_{timestamp}.json")
+    changelog_file = os.path.join(gitboss.ucli_path, f"changelog_{timestamp}.json")
     with open(changelog_file, 'w') as f:
         json.dump({
             "changelog_entry": {
@@ -314,7 +314,7 @@ The changelog entry should focus on user-facing changes and development impact. 
         }, f, indent=2)
     
     # Save only changelog entry to a markdown file
-    changelog_file_md = os.path.join(gitboss.gitboss_path, f"changelog_{timestamp}.md")
+    changelog_file_md = os.path.join(gitboss.ucli_path, f"changelog_{timestamp}.md")
     with open(changelog_file_md, 'w') as f:
       f.write(f"# Changelog\n\n")
       f.write(f"## Summary\n{result.changelog_entry.summary}\n\n")
