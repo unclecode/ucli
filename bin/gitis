@@ -1,0 +1,167 @@
+#!/Users/unclecode/devs/crawl4ai/venv/bin/python
+
+import requests
+import os, sys
+import argparse
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from colorama import init, Fore, Style
+init()  # Initialize colorama
+
+def log_info(message):
+    print(f"{Fore.BLUE}[INFO]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+def log_success(message):
+    print(f"{Fore.GREEN}[SUCCESS]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+def log_warning(message):
+    print(f"{Fore.YELLOW}[WARNING]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+def log_error(message):
+    print(f"{Fore.RED}[ERROR]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+
+TOKEN = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+# GitHub API configuration
+GITHUB_API = "https://api.github.com"
+OWNER = "unclecode"
+REPO = "crawl4ai"
+headers = {
+    "Authorization": f"token {TOKEN}",
+    "Accept": "application/vnd.github.v3+json"
+}
+
+def get_repo_info():
+    try:
+        remote_url = os.popen('git config --get remote.origin.url').read().strip()
+        if 'github.com' not in remote_url:
+            raise ValueError("Not a GitHub repository")
+            
+        # Handle both SSH and HTTPS URLs
+        if remote_url.startswith('git@'):
+            owner_repo = remote_url.split(':')[1].replace('.git', '')
+        else:
+            owner_repo = remote_url.split('github.com/')[1].replace('.git', '')
+            
+        owner, repo = owner_repo.split('/')
+        log_success(f"Found repository: {owner}/{repo}")
+        return owner, repo
+    except Exception as e:
+        log_error(f"Not in a GitHub repository or couldn't get repo info: {e}")
+
+        sys.exit(1)
+
+def check_token():
+    if not TOKEN:
+        log_error("GITHUB_PERSONAL_ACCESS_TOKEN environment variable not set")
+        sys.exit(1)
+
+def get_recent_issues(days=300, state="all"):
+    log_info(f"Fetching {state} issues from the last {days} days...")
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    url = f"{GITHUB_API}/repos/{OWNER}/{REPO}/issues"
+    params = {
+        "state": state,
+        "sort": "updated",
+        "direction": "desc",
+        "since": since
+    }
+    response = requests.get(url, headers=headers, params=params)
+    issues = response.json()
+    log_success(f"Found {len(issues)} issues")    
+    return issues
+    # return response.json()
+
+def is_owner_last_commenter(issue):
+    comments_url = issue['comments_url']
+    response = requests.get(comments_url, headers=headers)
+    comments = response.json()
+    
+    if comments:
+        last_comment = comments[-1]
+        return last_comment['user']['login'] == OWNER
+    return False
+
+def contains_keywords(issue, keywords):
+    if not keywords:
+        return True
+    
+    title = issue['title'].lower()
+    body = issue['body'].lower() if issue['body'] else ""
+    
+    for keyword in keywords:
+        if keyword.lower() in title or keyword.lower() in body:
+            return True
+    
+    return False
+
+def process_issue(issue, owner_last_comment, keywords):
+    matches_owner_criterion = is_owner_last_commenter(issue) == owner_last_comment
+    matches_keywords = contains_keywords(issue, keywords)
+    
+    if matches_owner_criterion and matches_keywords:
+        return issue
+    return None
+
+def save_to_markdown(issues, filename="git_issues.md", owner_last_comment=False):
+    log_info(f"Saving {len(issues)} issues to {filename}")
+    _path = os.getcwd() + "/" + filename
+    with open(_path, "w", encoding="utf-8") as f:
+        f.write("# GitHub Issues Analysis\n\n")
+        condition = "are" if owner_last_comment else "are not"
+        f.write(f"Issues where the owner {condition} the last commenter:\n\n")
+        
+        for issue in issues:
+            number = issue['number']
+            updated_at = datetime.strptime(issue['updated_at'], "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S")
+            url = issue['html_url']
+            title = issue['title']
+            state = issue['state']
+            is_pr = 'pull_request' in issue
+            
+            f.write(f"## {'Pull Request' if is_pr else 'Issue'} #{number}\n")
+            f.write(f"- **Last Updated:** {updated_at}\n")
+            f.write(f"- **Title:** [{title}]({url})\n")
+            f.write(f"- **State:** {state}\n\n")
+
+    # print(f"Output saved to {filename}")
+    log_success(f"Output saved to {filename}")
+
+def main():
+    check_token()
+    global OWNER, REPO
+    OWNER, REPO = get_repo_info()    
+    
+    log_info("Starting GitHub issues analysis...")
+    print("-" * 60, file=sys.stderr)
+
+    parser = argparse.ArgumentParser(description="Analyze GitHub issues and pull requests")
+    parser.add_argument("--owner-last", action="store_true", help="Find issues where the owner is the last commenter")
+    parser.add_argument("--state", choices=["all", "open", "closed"], default="all", help="Filter issues by state")
+    parser.add_argument("--keywords", nargs="+", help="Keywords to search for in issues")
+    parser.add_argument("--output", default="git_issues.md", help="Output file name")
+    args = parser.parse_args()
+
+    if args.keywords:
+        log_info(f"Filtering issues with keywords: {', '.join(args.keywords)}")
+ 
+    issues = get_recent_issues(state=args.state)
+    
+    log_info("Processing issues...")
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_issue = {executor.submit(process_issue, issue, args.owner_last, args.keywords): issue for issue in issues}
+        relevant_issues = []
+        
+        for future in as_completed(future_to_issue):
+            result = future.result()
+            if result:
+                relevant_issues.append(result)
+
+    relevant_issues.sort(key=lambda x: x['updated_at'], reverse=True)
+    log_success(f"Found {len(relevant_issues)} relevant issues")
+    save_to_markdown(relevant_issues, filename=args.output, owner_last_comment=args.owner_last)
+    print("-" * 60, file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

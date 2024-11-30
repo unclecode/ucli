@@ -1,0 +1,4 @@
+GitPython
+colorama
+requests
+litellm

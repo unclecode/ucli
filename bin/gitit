@@ -1,0 +1,475 @@
+#!/Users/unclecode/devs/crawl4ai/venv/bin/python
+
+import os
+import sys
+import git
+import json
+import argparse
+from datetime import datetime
+from litellm import completion
+from pydantic import BaseModel
+from typing import List, Optional, Dict
+from colorama import init, Fore, Style
+from pathlib import Path
+
+init()  # Initialize colorama
+
+#
+
+# Constants
+GITBOSS_DIR = ".gitboss"
+CURRENT_CHANGES_FILE = "current_changes.md"
+
+# Pydantic models for structured output
+# class FileChange(BaseModel):
+#     file_path: str
+#     changes: str
+#     summary: str
+
+# class ChangelogEntry(BaseModel):
+#     title: str
+#     content: str
+#     file_changes: List[FileChange]
+    
+class FileModification(BaseModel):
+    file_path: str
+    modifications: str
+    impact: str  # What this change means for the feature/fix
+
+class FeatureChange(BaseModel):
+    title: str  # e.g. "Enhanced Authentication System"
+    date: str   # e.g. "Nov 30, 2023"
+    description: str
+    category: str  # e.g. "Major Features", "Infrastructure & Documentation", etc.
+    affected_files: List[FileModification]
+
+class ChangelogEntry(BaseModel):
+    summary: str
+    changes: List[FeatureChange]
+
+class CommitDetails(BaseModel):
+    changelog_entry: ChangelogEntry
+    commit_message: str
+
+# Logging functions
+def log_info(message):
+    print(f"{Fore.BLUE}[INFO]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+def log_success(message):
+    print(f"{Fore.GREEN}[SUCCESS]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+def log_warning(message):
+    print(f"{Fore.YELLOW}[WARNING]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+def log_error(message):
+    print(f"{Fore.RED}[ERROR]{Style.RESET_ALL} {message}", file=sys.stderr)
+
+class GitBossManager:
+    def __init__(self, repo_path='.'):
+        self.repo_path = os.getcwd()
+        self.gitboss_path = os.path.join(repo_path, GITBOSS_DIR)
+        self.ensure_gitboss_directory()
+        
+    def ensure_gitboss_directory(self):
+        """Ensure .gitboss directory exists and has proper structure"""
+        if not os.path.exists(self.gitboss_path):
+            os.makedirs(self.gitboss_path)
+            log_info(f"Created {GITBOSS_DIR} directory")
+            
+            # Create .gitignore if it doesn't exist
+            gitignore_path = os.path.join(self.repo_path, '.gitignore')
+            if not os.path.exists(gitignore_path):
+                with open(gitignore_path, 'w') as f:
+                    f.write(f"{GITBOSS_DIR}/\n")
+            else:
+                with open(gitignore_path, 'r+') as f:
+                    content = f.read()
+                    if f"{GITBOSS_DIR}/" not in content:
+                        f.write(f"\n{GITBOSS_DIR}/\n")
+
+    def save_current_changes(self, content: str):
+        """Save current changes to current_changes.md"""
+        filepath = os.path.join(self.gitboss_path, CURRENT_CHANGES_FILE)
+        with open(filepath, 'w') as f:
+            f.write(content)
+        return filepath
+
+    def save_committed_changes(self, content: str) -> str:
+        """Save committed changes with timestamp"""
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        filename = f"changes_{timestamp}.md"
+        filepath = os.path.join(self.gitboss_path, filename)
+        with open(filepath, 'w') as f:
+            f.write(content)
+        return filepath
+
+def get_branch_changes(repo_path='.') -> Dict[str, str]:
+    """Get changes between main and current branch using git log --stat --summary"""
+    try:
+        repo = git.Repo(os.getcwd())
+        current_branch = repo.active_branch.name
+        
+        # Find merge base with main
+        try:
+            merge_base = repo.merge_base('main', 'HEAD')[0]
+        except:
+            try:
+                merge_base = repo.merge_base('origin/main', 'HEAD')[0]
+            except Exception as e:
+                log_error(f"Could not find merge base with main: {str(e)}")
+                return {}
+
+        # Get the stat summary using git log
+        try:
+            # Using git log --stat --summary for a condensed view
+            summary = repo.git.log(
+                '--stat',
+                '--summary',
+                f"{merge_base.hexsha}..HEAD"
+            )
+            
+            if summary:
+                log_success("Successfully retrieved branch change summary")
+                # Return as a single entry since it's a summary
+                return {"branch_summary": summary}
+            else:
+                log_warning("No changes detected since branching from main")
+                return {}
+
+        except Exception as e:
+            log_error(f"Error getting log summary: {str(e)}")
+            return {}
+
+    except Exception as e:
+        log_error(f"Error getting branch changes: {str(e)}")
+        return {}
+
+def list_current_changes(repo_path='.') -> Dict[str, str]:
+    """Get current uncommitted changes"""
+    try:
+        repo = git.Repo(os.getcwd())
+    except git.exc.InvalidGitRepositoryError:
+        log_error("Not a valid Git repository.")
+        sys.exit(1)
+
+    changes_summary = {}
+    
+    # Get both staged and unstaged changes
+    untracked_files = repo.untracked_files
+    diff_index = repo.index.diff(None)  # unstaged changes
+    diff_staged = repo.index.diff('HEAD')  # staged changes
+    
+    # Process untracked files
+    for file_path in untracked_files:
+        if os.path.isfile(file_path):
+            with open(file_path, 'r') as f:
+                content = f.read()
+            changes_summary[file_path] = f"New file:\n{content}"
+    
+    # Process unstaged changes
+    for diff_item in diff_index:
+        file_path = diff_item.a_path
+        if os.path.isfile(file_path):
+            changes_summary[file_path] = repo.git.diff(None, file_path)
+    
+    # Process staged changes
+    for diff_item in diff_staged:
+        file_path = diff_item.a_path
+        if os.path.isfile(file_path) and file_path not in changes_summary:
+            changes_summary[file_path] = repo.git.diff('HEAD', file_path)
+
+    if changes_summary:
+        log_success(f"Found changes in {len(changes_summary)} file(s)")
+    else:
+        log_warning("No changes detected in the repository")
+
+    return changes_summary
+
+def format_changes_markdown(changes_summary: Dict[str, str], title: str) -> str:
+    """Format changes as markdown"""
+    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    md_content = f"# {title}\n\n"
+    md_content += f"Generated at: {current_datetime}\n\n"
+    
+    if "branch_summary" in changes_summary:
+        # Handle branch summary format
+        md_content += "## Branch Changes Summary\n\n"
+        md_content += "```\n"
+        md_content += changes_summary["branch_summary"]
+        md_content += "\n```\n"
+    else:
+        # Handle regular file changes format
+        changes_by_dir = {}
+        for file_path, changes in changes_summary.items():
+            directory = os.path.dirname(file_path) or "root"
+            if directory not in changes_by_dir:
+                changes_by_dir[directory] = []
+            changes_by_dir[directory].append((file_path, changes))
+        
+        # Add changes grouped by directory
+        for directory, files in sorted(changes_by_dir.items()):
+            md_content += f"## {directory}\n\n"
+            for file_path, changes in sorted(files):
+                md_content += f"### {os.path.basename(file_path)}\n"
+                md_content += "```diff\n"
+                md_content += changes + "\n"
+                md_content += "```\n\n"
+    
+    return md_content
+
+def generate_changelog_and_commit(changes_summary, branch_mode=False, perform_git_ops=False):
+    if not changes_summary:
+        log_warning("No changes detected. Exiting...")
+        return
+
+    log_info("Formatting changes for analysis...")
+    formatted_changes = "\n".join([f"File: {file}\nChanges:\n{diff}" 
+                                 for file, diff in changes_summary.items()])
+    
+    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    
+    # Save raw changes to GitBoss directory
+    gitboss = GitBossManager()
+    change_type = "branch" if branch_mode else "current"
+    markdown_content = format_changes_markdown(
+        changes_summary,
+        f"{'Branch' if branch_mode else 'Current'} Changes Summary"
+    )
+    current_file = gitboss.save_current_changes(markdown_content)
+    log_success(f"Saved changes summary to {current_file}")
+    
+    log_info("Preparing prompt for API...")
+    prompt = f"""
+<instruction>
+Please analyze the following Git changes and generate a changelog entry with a commit message.
+
+1/ Changelog must be organized into these sections:
+    -Major Features (with dates)
+    -Infrastructure & Documentation
+    -Breaking Changes (if any)
+    -Development Updates
+2/ Format requirements:
+    -Major Features should be numbered and include dates: "1. Feature Name (MMM DD, YYYY)"
+    -Use bullet points (-) for sub-entries
+    -Put file paths in backticks: path/to/file
+    -Use action verbs (Added, Implemented, Enhanced, etc.)
+    -Group related changes together
+    -Keep entries concise and focused
+3/ Also generate a concise commit message that includes:
+    -A summary line (max 50 chars)
+    -Detailed breakdown of key changes (bullet points)
+</instruction>
+
+<datetime>{current_datetime}</datetime>
+
+<changes>
+{formatted_changes}
+</changes>
+
+The changelog entry should focus on user-facing changes and development impact. Group related changes together logically.
+"""
+
+    log_info("Calling API to generate changelog and commit message...")
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        response = completion(
+            model="gpt-4o-mini",
+            messages=messages,
+            response_format=CommitDetails
+        )
+        log_success("Successfully received response from API")
+    except Exception as e:
+        log_error(f"Failed to get response from API: {str(e)}")
+        sys.exit(1)
+
+    result = response.choices[0].message.content
+    result = CommitDetails(**json.loads(result))
+    
+    # Save the generated changelog with timestamp
+    changelog_file = os.path.join(gitboss.gitboss_path, f"changelog_{timestamp}.json")
+    with open(changelog_file, 'w') as f:
+        json.dump({
+            "changelog_entry": {
+                # "title": result.changelog_entry.title,
+                # "content": result.changelog_entry.content,
+                # "file_changes": [fc.dict() for fc in result.changelog_entry.file_changes]
+              "summary": result.changelog_entry.summary,
+              "changes": [{
+                  "title": fc.title,
+                  "date": fc.date,
+                  "description": fc.description,
+                  "category": fc.category,
+                  "affected_files": [{
+                      "file_path": af.file_path,
+                      "modifications": af.modifications,
+                      "impact": af.impact
+                  } for af in fc.affected_files]
+              } for fc in result.changelog_entry.changes]                
+            },
+            "commit_message": result.commit_message,
+            "timestamp": current_datetime,
+            "branch_mode": branch_mode
+        }, f, indent=2)
+    
+    # Save only changelog entry to a markdown file
+    changelog_file_md = os.path.join(gitboss.gitboss_path, f"changelog_{timestamp}.md")
+    with open(changelog_file_md, 'w') as f:
+      f.write(f"# Changelog\n\n")
+      f.write(f"## Summary\n{result.changelog_entry.summary}\n\n")
+      
+      # Group changes by category
+      changes_by_category = {}
+      for change in result.changelog_entry.changes:
+          if change.category not in changes_by_category:
+              changes_by_category[change.category] = []
+          changes_by_category[change.category].append(change)
+      
+      for category, changes in changes_by_category.items():
+          f.write(f"## {category}\n\n")
+          for change in changes:
+              f.write(f"### {change.title} ({change.date})\n")
+              f.write(f"{change.description}\n\n")
+              f.write("**Affected Files:**\n")
+              for file_mod in change.affected_files:
+                  f.write(f"- `{file_mod.file_path}`: {file_mod.impact}\n")
+                  if file_mod.modifications:
+                      f.write("```diff\n")
+                      f.write(file_mod.modifications)
+                      f.write("\n```\n")
+              f.write("\n")        
+        # f.write(f"# {result.changelog_entry.title}\n\n")
+        # f.write(result.changelog_entry.content)
+        # f.write("\n\n")
+        # for file_change in result.changelog_entry.file_changes:
+        #     f.write(f"## {file_change.file_path}\n")
+        #     f.write(file_change.summary)
+        #     f.write("\n")
+        #     f.write(file_change.changes)
+        #     f.write("\n\n")
+    
+    log_success(f"Saved generated changelog to {changelog_file}")
+    
+    # Print only the commit message to stdout for user review
+    print("\n" + "-" * 60, file=sys.stderr)
+    print("Commit Message:", file=sys.stderr)    
+    for line in result.commit_message.splitlines():
+        print(f"  {line}", file=sys.stderr)
+    print("-" * 60 + "\n", file=sys.stderr)
+    
+    if perform_git_ops:
+        # Ask user to confirm the changes
+        user_input = input("Do you want to proceed with the above changes? (y/n, press empty to accept): ")
+        if user_input.lower() not in ['y', 'yes'] and user_input.strip() != "":
+            log_warning("User chose not to proceed. Exiting...")
+            sys.exit(0)
+        
+        log_info("Updating changelog file...")
+        update_changelog(result.changelog_entry, current_datetime)
+        
+        log_info("Performing Git operations...")
+        commit_changes(result.commit_message)
+    
+    return result
+
+def update_changelog(changelog_entry: ChangelogEntry, datetime: str):
+    changelog_content = f"## {changelog_entry.title}\n{changelog_entry.content}\n\n"
+    
+    # Create new file if it doesn't exist
+    if not os.path.exists('CHANGELOG.md'):
+        log_info("Creating new CHANGELOG.md")
+        with open('CHANGELOG.md', 'w') as f:
+            f.write("# Changelog\n\n" + changelog_content)
+        log_success("Successfully created CHANGELOG.md")
+        return
+
+    # Read existing content
+    log_info("Found existing CHANGELOG.md")
+    try:
+        with open('CHANGELOG.md', 'r') as f:
+            existing_content = f.read()
+    except Exception as e:
+        log_error(f"Failed to read CHANGELOG.md: {str(e)}")
+        sys.exit(1)
+
+    # Ensure the file has the correct header
+    if not existing_content.startswith("# Changelog"):
+        existing_content = "# Changelog\n\n" + existing_content
+        log_warning("Added missing '# Changelog' header")
+
+    try:
+        # Split content into header and body
+        header = "# Changelog\n\n"
+        body = existing_content[len(header):] if existing_content.startswith(header) else existing_content
+
+        # Write back with new entry at the top
+        with open('CHANGELOG.md', 'w') as f:
+            f.write(header + changelog_content + body)
+        
+        log_success("Successfully updated CHANGELOG.md")
+    except Exception as e:
+        log_error(f"Failed to update CHANGELOG.md: {str(e)}")
+        sys.exit(1)
+
+def commit_changes(commit_message: str):
+    try:
+        repo = git.Repo('.')
+        log_info("Adding all changes to Git staging area...")
+        repo.git.add('.')
+        
+        log_info("Committing changes...")
+        repo.git.commit('-m', commit_message)
+        
+        log_success("Successfully committed all changes")
+        log_info("\nExecuted Git commands:")
+        log_info("  git add .")
+        log_info(f'  git commit -m "{commit_message}"')
+    except Exception as e:
+        log_error(f"Failed to commit changes: {str(e)}")
+        sys.exit(1)
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Generate changelog and optionally commit changes')
+    parser.add_argument('--commit', '-c', action='store_true',
+                       help='Update changelog file and commit changes (interactive mode)')
+    parser.add_argument('--branch', '-b', action='store_true',
+                       help='Generate changelog from changes since branching from main')
+    return parser.parse_args()
+
+def check_git_repo():
+    """Check if current directory is a git repository"""
+    try:
+        # git.Repo('.')
+        git.Repo(os.getcwd())
+        return True
+    except git.exc.InvalidGitRepositoryError:
+        log_error("Current directory is not a git repository")
+        return False
+
+def main():
+    if not check_git_repo():
+        sys.exit(1)
+        
+    args = parse_arguments()
+    log_info("Starting changelog generation process...")
+    print("-" * 60, file=sys.stderr)
+    
+    if args.branch:
+        changes_summary = get_branch_changes()
+    else:
+        changes_summary = list_current_changes()
+        
+    if changes_summary:
+        generate_changelog_and_commit(
+            changes_summary,
+            branch_mode=args.branch,
+            perform_git_ops=args.commit
+        )
+        if args.commit:
+            log_success("Changelog generation process completed successfully!")
+    
+    print("-" * 60, file=sys.stderr)
+
+if __name__ == "__main__":
+    main()
