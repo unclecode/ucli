@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# Function to display help
+show_help() {
+    echo "Usage: ccat [OPTIONS] DIRECTORY [DIRECTORY ...]"
+    echo "Concatenate and display file contents from directories with optional filters."
+    echo
+    echo "Options:"
+    echo "  -e PATTERN     Exclude files or directories matching PATTERN."
+    echo "  -i PATTERN     Include only files or directories matching PATTERN."
+    echo "  -g             Bypass .gitignore exclusion rules."
+    echo "  --help         Display this help message and exit."
+    echo
+    echo "Examples:"
+    echo "  ccat dir1 dir2                          Process all files in dir1 and dir2."
+    echo "  ccat -i '\\.py$' dir1                  Include only Python files."
+    echo "  ccat -e 'test' dir1 dir2                Exclude files containing 'test' in their path."
+    echo "  ccat -g dir1                            Ignore .gitignore rules."
+    exit 0
+}
+
+# Function to read .gitignore and generate an exclude pattern
+read_gitignore() {
+    local directory="$1"
+    if [ -f "$directory/.gitignore" ]; then
+        grep -v "^#" "$directory/.gitignore" | sed 's/^/.*\//' | tr '\n' '|' | sed 's/|$//' | sed 's/\./\\./g'
+    else
+        echo ""
+    fi
+}
+
+# Function to process files
+process_files() {
+    local directory="$1"
+    local exclude_pattern="$2"
+    local include_pattern="$3"
+    find "$directory" -type f | {
+        if [ -n "$include_pattern" ]; then
+            grep -E "$include_pattern"
+        else
+            cat
+        fi
+    } | {
+        if [ -n "$exclude_pattern" ]; then
+            grep -vE "$exclude_pattern"
+        else
+            cat
+        fi
+    } | while read -r file; do
+        echo "--- $file ---"
+        if [ -f "$file" ]; then
+            cat "$file"
+        else
+            echo "Error: Cannot read file $file" >&2
+        fi
+        echo -e "\n---------------------------\n"
+    done
+}
+
+# Initialize variables
+exclude_pattern=""
+include_pattern=""
+bypass_gitignore=false
+
+# Handle long options and initialize short options
+for arg in "$@"; do
+    case $arg in
+        --help)
+            show_help
+            ;;
+    esac
+done
+
+# Parse short options
+while getopts "e:i:gh" opt; do
+    case $opt in
+        e)
+            exclude_pattern="$OPTARG"
+            ;;
+        i)
+            include_pattern="$OPTARG"
+            ;;
+        g)
+            bypass_gitignore=true
+            ;;
+        h)
+            show_help
+            ;;
+        *)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+    esac
+done
+shift $((OPTIND -1))
+
+# Display help if no directories are provided
+if [ $# -eq 0 ]; then
+    show_help
+fi
+
+# Process all passed directories and output their contents
+for dir in "$@"; do
+    if [ -d "$dir" ]; then
+        if ! $bypass_gitignore; then
+            gitignore_pattern=$(read_gitignore "$dir")
+            if [ -n "$gitignore_pattern" ]; then
+                exclude_pattern="${exclude_pattern:+$exclude_pattern|}$gitignore_pattern"
+            fi
+        fi
+        process_files "$dir" "$exclude_pattern" "$include_pattern"
+    else
+        echo "Directory $dir does not exist" >&2
+    fi
+done
+
+# Output the folder tree for all passed directories
+echo "--- Combined Folder Tree ---"
+tree "$@" | {
+    if [ -n "$include_pattern" ]; then
+        grep -E "$include_pattern"
+    else
+        cat
+    fi
+} | {
+    if [ -n "$exclude_pattern" ]; then
+        grep -vE "$exclude_pattern"
+    else
+        cat
+    fi
+}
+echo -e "\n---------------------------\n"
