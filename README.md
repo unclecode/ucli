@@ -8,6 +8,7 @@ A collection of powerful CLI tools to enhance developer workflow.
 |---------|-------------|-----------------|
 | `gitit` | AI-powered commit message & changelog generator | None |
 | `gitis` | GitHub issues analyzer and tracker | `GITHUB_PERSONAL_ACCESS_TOKEN` |
+| `ccat`  | Enhanced file concatenation with filters and tree view | None |
 
 ## Installation
 
@@ -77,6 +78,26 @@ gitis --owner-last
 gitis --help        # Show all available options
 ```
 
+### ccat - File Concatenation Tool
+Concatenates and displays file contents with optional filters and a directory tree view.
+
+``` bash
+# Basic usage:
+ccat dir1 dir2
+
+# Include only specific file types:
+ccat -i '\.py$' dir1
+
+# Exclude files or directories:
+ccat -e 'test' dir1 dir2
+
+# Bypass .gitignore rules:
+ccat -g dir1
+
+# Additional options:
+ccat --help         # Show all available options
+```
+
 ## Project Organization
 
 ``` plaintext
@@ -104,6 +125,8 @@ pip install -e .
 
 ## Adding UCLI to Your Workflow
 
-1. Initialize your git repository (if not already done)
+1. Initialize your git repository (if not already done):
   ```bash
   git init
+  ```
+
